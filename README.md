@@ -30,7 +30,7 @@ GirGit brings AI to your fingertips — in a clean, transparent, always-availabl
 
 ## 🛠️ Getting Started
 
-1.Download the exe for windows and install it.
+1. Download the exe for windows and install it.
 2. Launch GirGit and use the hotkeys to activate.
 
 ---
