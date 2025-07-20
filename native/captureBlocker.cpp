@@ -22,8 +22,8 @@ void DisableScreenCapture(const Napi::CallbackInfo &info)
     // Exclude window from capture
     SetWindowDisplayAffinity(hwnd, WDA_EXCLUDEFROMCAPTURE);
     SetLayeredWindowAttributes(hwnd, 0, 255, LWA_ALPHA);
-    SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_SHOWWINDOW | SWP_NOSIZE);
-    ShowWindow(hwnd, SW_SHOW);
+    // SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_SHOWWINDOW | SWP_NOSIZE);
+    // ShowWindow(hwnd, SW_SHOW);
     UpdateWindow(hwnd);
 }
 Napi::Object Init(Napi::Env env, Napi::Object exports)

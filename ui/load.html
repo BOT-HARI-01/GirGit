@@ -19,7 +19,7 @@
         background-color: rgba(0, 0, 0, 0.2);
       }
       #capture-Mode {
-        padding: 50px;
+        padding: 5px;
         border-radius: 8px;
         color: white;
       }
@@ -29,11 +29,27 @@
       #display-transcribe {
         color: white;
       }
+      #llm{
+        color: white;
+      }
     </style>
   </head>
-  <body>
-    <div id="capture-Mode">CaptureMode left</div>
-    <div id="message-display"></div>
-  </body>
+<body>
+  <div style="display: flex; height: 100%;">
+    <div style="flex: 1; padding: 10px;">
+      <div id="capture-Mode">CaptureMode left</div>
+      <div id="message-display"></div>
+    </div>
+
+    <!-- Vertical Line Separator -->
+    <div style="width: 1px; background-color: gray; height: 100%;"></div>
+
+    <!-- Placeholder for right side content -->
+    <div style="flex: 1; padding: 10px;">
+      <div id="llm"></div>
+    </div>
+  </div>
+</body>
+
   <script src="../renderer.js"></script>
 </html>

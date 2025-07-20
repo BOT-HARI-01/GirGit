@@ -1,5 +1,5 @@
 window.api.onShowScreenshots((_event,screenshots) => {
-    const container = document.getElementById('screenshos-container');
+    const container = document.getElementById('screenshorts-container');
     container.innerHTML = ''; 
 
     screenshots.forEach((filePath) => {
@@ -15,7 +15,6 @@ window.api.onShowScreenshots((_event,screenshots) => {
 window.api.showText((_event, result) => {
   const explanationEl = document.getElementById('explanation');
   const codeBlockEl = document.getElementById('code-block');
-
   explanationEl.innerHTML = result.text;
   codeBlockEl.innerHTML = result.code;
 });
@@ -41,6 +40,10 @@ window.api.message((_event, message) => {
 
 window.api.voice((_event,message) =>{
   const container = document.getElementById('display-transcribe');
-  console
   container.innerHTML += message;
+})
+
+window.api.llm((_event,message) =>{
+  const container = document.getElementById('llm');
+  container.innerHTML = message;
 })

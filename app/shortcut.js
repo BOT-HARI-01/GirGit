@@ -1,8 +1,10 @@
-const { globalShortcut, app } = require("electron");
-const { WindowsScreenShotHelper } = require("./screenshotHelper");
-const path = require("path");
-const fs = require("fs");
-const helper = new WindowsScreenShotHelper();
+import { globalShortcut, app, shell } from "electron";
+import path from "path";
+import fs from "fs";
+import { fileURLToPath } from 'url';
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+import { switchModel } from "./modelManager.js";
 
 let currModeIndex = 0;
 const modes = ["left", "right", "full"];
@@ -17,7 +19,7 @@ function cycleMode() {
   currModeIndex = (currModeIndex + 1) % modes.length;
   const mode = getCurrentMode();
 }
-function registerShortCuts(
+export function registerShortCuts(
   win,
   mainWindow,
   onScreenShotTriggered,
@@ -86,8 +88,9 @@ globalShortcut.register("Control+Up", () => {
     onScreenShotTriggered(mode);
   });
   //clear ocrdata
+  const isDev = !app.isPackaged;
   globalShortcut.register("Ctrl+Shift+C", () => {
-    const filePath = path.join(__dirname, "../ocr_output.txt");
+    const filePath = isDev? path.join(__dirname, "../ocr_output.txt") : path.join(app.getPath("userData"),'ocr_output.txt'); 
     fs.writeFileSync(filePath, "", "utf-8");
     console.log("OCR output cleared");
   });
@@ -99,7 +102,7 @@ globalShortcut.register("Control+Up", () => {
   //cycle Capture modes
   globalShortcut.register("Control+M", () => {
     cycleMode();
-    const mode = getCurrentMode();
+    const mode = getCurrentMode(); 
     getCaptureMode(mode);
   });
   //record
@@ -115,13 +118,20 @@ globalShortcut.register("Control+Up", () => {
     haltMouseEvent(toggleMouse);
     toggleMouse = !toggleMouse; 
   });
+  //swith Model
+  globalShortcut.register("control+Shift+M",() => {
+    const {model} = switchModel();
+    mainWindow.webContents.send("llm",model);
+  });
+  //open ENV
+  globalShortcut.register("Control+.",() =>{
+    const filePath = isDev? path.join(__dirname, "../.env") : path.join(app.getPath("userData"),'.env');
+    shell.openPath(filePath);
+  })
 }
 
-function unregisterShortcuts() {
+export function unregisterShortcuts() {
   globalShortcut.unregisterAll();
 }
 
-module.exports = {
-  registerShortCuts,
-  unregisterShortcuts,
-};
+

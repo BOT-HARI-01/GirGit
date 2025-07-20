@@ -1,0 +1,75 @@
+{
+  "name": "girgit",
+  "version": "0.1.0",
+  "description": "",
+  "main": "app/main.js",
+  "type": "module",
+  "scripts": {
+    "start": "electron .",
+    "build": "cd native && node-gyp configure build",
+    "buildapp": "electron-builder",
+    "rebuild": "electron-rebuild -f -w .",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@google/genai": "^1.3.0",
+    "cohere-ai": "^7.17.1",
+    "dotenv": "^17.2.0",
+    "google": "^2.1.0",
+    "node-window-manager": "^2.2.4",
+    "openai": "^5.10.1",
+    "tesseract.js": "^6.0.1",
+    "util": "^0.12.5",
+    "uuid": "^11.1.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.18",
+    "electron": "^35.1.2",
+    "electron-builder": "^26.0.12",
+    "electron-rebuild": "^3.2.9",
+    "install": "^0.13.0",
+    "nan": "^2.22.2",
+    "node-addon-api": "^8.3.1",
+    "node-gyp": "^11.1.0"
+  },
+  "build": {
+    "extraResources": [
+      {
+        "from": "native/build/Release/",
+        "to": "native/build/Release/"
+      }
+    ],
+    "appId": "com.yourcompany.girgit",
+    "productName": "girgit",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "**/*",
+      "api/*",
+      "app/*",
+      "assets/*",
+      "ui/*",
+      "native/build/Release/*",
+      "PyScript/*",
+      "!**/.vscode",
+      "!**/whisper.cpp",
+      "!**/scrape",
+      "!**/*.md",
+      "!**/node",
+      "node_modules/**/*"
+    ],
+    "asar": true,
+    "win": {
+      "target": "nsis",
+      "icon": "assets/icon.png"
+    },
+    "mac": {
+      "target": "dmg",
+      "icon": "assets/icons/mac/icon.icns"
+    }
+  }
+}
