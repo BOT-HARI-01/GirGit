@@ -47,6 +47,9 @@
         color: white;
         /* background-color: rgba(0, 0, 0, 0.2); */
       }
+      #text-display::-webkit-scrollbar {
+        width: 8px;
+      }
       #capture-Mode {
         border-radius: 8px;
         color: white;
@@ -56,6 +59,44 @@
       }
       #display-transcribe {
         color: white;
+      }
+      @import url("https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Fira+Code:wght@400;500&display=swap");
+
+      #explanation {
+        font-family: "Inter", sans-serif;
+        font-size: 18px;
+        line-height: 1.8;
+        letter-spacing: 0.5px;
+        color: #ffffff;
+        text-shadow: 0 0 6px rgba(0, 0, 0, 0.7);
+      }
+      #text-display::-webkit-scrollbar-track {
+        background: rgba(255, 255, 255, 0.05); 
+        border-radius: 8px;
+      }
+
+      #text-display::-webkit-scrollbar-thumb {
+        background-color: rgba(255, 255, 255, 0.2);
+        border-radius: 8px;
+        border: 2px solid rgba(0, 0, 0, 0);
+        background-clip: content-box;
+        transition: background-color 0.3s;
+      }
+
+      #code-block {
+        /* font-family: "Fira Code", monospace; */
+        font-family: "Inter", sans-serif;
+        font-size: 18px;
+        line-height: 1.6;
+        letter-spacing: 0.3px;
+        color: #f5f5f5;
+        /* background-color: rgba(0, 0, 0, 0.55); */
+        padding: 14px 16px;
+        border-radius: 8px;
+        overflow-x: auto;
+        /* text-shadow: 0 0 5px rgba(0, 0, 0, 0.6); */
+        -webkit-backdrop-filter: blur(4px);
+        backdrop-filter: blur(4px);
       }
     </style>
   </head>

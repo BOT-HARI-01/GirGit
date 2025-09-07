@@ -4,211 +4,453 @@
 #include <Audioclient.h>
 #include <Audiopolicy.h>
 #include <iostream>
-#include <assert.h>
-#include <fstream>
-#pragma comment(lib, "Ole32.lib")
+#include <vector>
+#include <string>
+#include <queue>
+#include <mutex>
+#include <condition_variable>
 
+#include <whisper.h>
+
+// Include Windows Media Foundation headers for resampling
+#include <mfapi.h>
+#include <mfidl.h>
+#include <mferror.h>
+#include <wmcodecdsp.h> // For CLSID_CResamplerMediaObject
+
+#pragma comment(lib, "Ole32.lib")
+#pragma comment(lib, "mfplat.lib")
+#pragma comment(lib, "mfreadwrite.lib")
+#pragma comment(lib, "mfuuid.lib")
+#pragma comment(lib, "wmcodecdspuuid.lib")
+
+// --- Thread-Safe Queue for Audio Data ---
+struct ThreadSafeQueue
+{
+    std::queue<std::vector<float>> q;
+    std::mutex m;
+    std::condition_variable cv;
+};
+
+// --- Global Variables ---
 IAudioClient *audioClient = nullptr;
 IAudioCaptureClient *captureClient = nullptr;
 IMMDevice *defaultDevice = nullptr;
 IMMDeviceEnumerator *deviceEnumerator = nullptr;
 WAVEFORMATEX *pwfx = nullptr;
-FILE *wavFile = nullptr;
-BYTE *chunkBuffer = nullptr;
-BYTE *dataBuffer = nullptr;
-int bufferBytesCaptured = 0;
-int totalBytesCaptured = 0;
-bool capturing = false;
+IMFTransform *pResampler = nullptr;
+
 HANDLE captureThread = NULL;
+HANDLE whisperThread = NULL;
 
-void write_wav_header(FILE *f, int sample_rate, int bits_per_sample, int channels, int data_size)
+bool capturing = false;
+bool processing = false;
+
+ThreadSafeQueue audioQueue;
+
+// Target audio format for Whisper
+const int TARGET_SAMPLE_RATE = 16000;
+const int TARGET_BITS_PER_SAMPLE = 16;
+const int TARGET_CHANNELS = 1; // Whisper works best with mono
+
+// Whisper context and parameters
+whisper_context_params cparams = whisper_context_default_params();
+struct whisper_context *wctx = nullptr; // Initialize later
+struct whisper_full_params wparams = whisper_full_default_params(WHISPER_SAMPLING_GREEDY);
+
+Napi::ThreadSafeFunction tsfn;
+
+void InitCallback(const Napi::Env &env, Napi::Function jsCallback)
 {
-    int byte_rate = sample_rate * channels * bits_per_sample / 8;
-    int block_align = channels * bits_per_sample / 8;
-    int subchunk2_size = data_size;
-
-    fwrite("RIFF", 1, 4, f);
-    int chunk_size = 36 + subchunk2_size;
-    fwrite(&chunk_size, 4, 1, f);
-    fwrite("WAVE", 1, 4, f);
-
-    fwrite("fmt ", 1, 4, f);
-    int subchunk1_size = 16;
-    short audio_format = 1;
-    fwrite(&subchunk1_size, 4, 1, f);
-    fwrite(&audio_format, 2, 1, f);
-    fwrite(&channels, 2, 1, f);
-    fwrite(&sample_rate, 4, 1, f);
-    fwrite(&byte_rate, 4, 1, f);
-    fwrite(&block_align, 2, 1, f);
-    fwrite(&bits_per_sample, 2, 1, f);
-
-    fwrite("data", 1, 4, f);
-    fwrite(&subchunk2_size, 4, 1, f);
+    tsfn = Napi::ThreadSafeFunction::New(
+        env,
+        jsCallback,        // JS callback
+        "WhisperCallback", // Resource name
+        0,                 // Unlimited queue
+        1                  // Only one thread will call
+    );
 }
 
-
-bool CreateFolderIfNotExists(const std::string &folderPath)
+Napi::Value RedgCallBack(const Napi::CallbackInfo &info)
 {
-
-    WIN32_FIND_DATAA findFileData;
-    HANDLE hFind;
-
-    std::string searchPath = folderPath + "\\*";
-    hFind = FindFirstFileA(searchPath.c_str(), &findFileData);
-    if (hFind == INVALID_HANDLE_VALUE)
-        return false;
-
-    do
+    Napi::Env env = info.Env();
+    if (!info[0].IsFunction())
     {
-        if (!(findFileData.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY))
-        {
-            std::string filePath = folderPath + "\\" + findFileData.cFileName;
-            DeleteFileA(filePath.c_str());
-        }
-    } while (FindNextFileA(hFind, &findFileData));
-
-    FindClose(hFind);
-
-    DWORD ftyp = GetFileAttributesA(folderPath.c_str());
-    if (ftyp == INVALID_FILE_ATTRIBUTES)
-    {
-        // Folder does not exist, create it
-        if (CreateDirectoryA(folderPath.c_str(), NULL) || GetLastError() == ERROR_ALREADY_EXISTS)
-        {
-            return true;
-        }
-        else
-        {
-            return false; // failed to create
-        }
+        Napi::TypeError::New(env, "Expected function").ThrowAsJavaScriptException();
+        return env.Null();
     }
-    else if (ftyp & FILE_ATTRIBUTE_DIRECTORY)
+
+    InitCallback(env, info[0].As<Napi::Function>());
+    return env.Null();
+}
+// --- [NEW] Whisper Callback for Real-Time Results ---
+// This function is called by whisper.cpp every time a new segment of text is transcribed.
+void NewSegmentCallback(struct whisper_context *ctx, struct whisper_state *state, int n_new, void *user_data)
+{
+    // The main whisper processing loop is in a different thread, so we can get the total segments count.
+    const int n_segments = whisper_full_n_segments(ctx);
+
+    // This callback is called with 'n_new' new segments. We'll print the last 'n_new' segments.
+    for (int i = n_segments - n_new; i < n_segments; ++i)
     {
-        // Folder already exists
-        return true;
-    }
-    else
-    {
-        // Exists but not a directory
-        return false;
+        const char *text = whisper_full_get_segment_text(ctx, i);
+        // Print text immediately to the console
+        std::string segment(text);
+        tsfn.BlockingCall([segment](Napi::Env env, Napi::Function jsCallback)
+                          { jsCallback.Call({Napi::String::New(env, segment)}); });
+        std::cout << text << std::flush;
     }
 }
-DWORD WINAPI CaptureAudioThread(LPVOID)
+
+// --- Whisper Processing Thread (Consumer) ---
+DWORD WINAPI WhisperProcessingThread(LPVOID)
 {
-    CreateFolderIfNotExists("chunks");
-    const int bytesPerSample = pwfx->wBitsPerSample / 8;
-    const int bytesPerFrame = pwfx->nChannels * bytesPerSample;
-    const int bufferSize = pwfx->nSamplesPerSec * bytesPerFrame * 60;
-    dataBuffer = new BYTE[bufferSize];
-    chunkBuffer = new BYTE[bufferSize];
-
-    bufferBytesCaptured = 0;
-    totalBytesCaptured = 0;
-
-    const int chunkDurationSec = 5;
-    const int bytesPerSecond = pwfx->nAvgBytesPerSec;
-    const int chunkSize = bytesPerSecond * chunkDurationSec;
-    int chunkIndex = 0;
-
-    while (capturing)
+    std::vector<float> audioBuffer;
+    // We can use a larger buffer for better accuracy, as the callback gives us real-time results.
+    // const size_t processing_interval_samples = TARGET_SAMPLE_RATE * 1; // Process in 2-second chunks
+    const size_t processing_interval_samples = TARGET_SAMPLE_RATE / 10; // Process in 2-second chunks
+    while (processing)
     {
-        UINT32 packetLength = 0;
-        HRESULT hr = captureClient->GetNextPacketSize(&packetLength);
-        if (FAILED(hr))
-            continue;
-
-        if (packetLength == 0)
         {
-            Sleep(10);
-            continue;
+            std::unique_lock<std::mutex> lock(audioQueue.m);
+            audioQueue.cv.wait(lock, [&]
+                               { return !audioQueue.q.empty() || !processing; });
+
+            if (!processing && audioQueue.q.empty())
+            {
+                break;
+            }
+
+            while (!audioQueue.q.empty())
+            {
+                std::vector<float> chunk = std::move(audioQueue.q.front());
+                audioQueue.q.pop();
+                audioBuffer.insert(audioBuffer.end(), chunk.begin(), chunk.end());
+            }
         }
 
-        BYTE *data;
-        UINT32 numFrames;
-        DWORD flags;
-        hr = captureClient->GetBuffer(&data, &numFrames, &flags, NULL, NULL);
-        if (FAILED(hr))
-            continue;
-
-        int numBytes = numFrames * bytesPerFrame;
-        if (bufferBytesCaptured + numBytes <= bufferSize)
+        if (!audioBuffer.empty() && audioBuffer.size() > processing_interval_samples)
         {
-            memcpy(chunkBuffer + bufferBytesCaptured, data, numBytes);
-            bufferBytesCaptured += numBytes;
-        }
-        if(totalBytesCaptured + numBytes <= bufferSize){
-            memcpy(dataBuffer + totalBytesCaptured, data, numBytes);
-            totalBytesCaptured += numBytes;
-        }
-        captureClient->ReleaseBuffer(numFrames);
-        // chunks making code
-        if (bufferBytesCaptured >= chunkSize)
-        {
-            std::string chunkFilename = "chunks\\chunk_" + std::to_string(chunkIndex++) + ".wav";
-            FILE *chunkFile = fopen(chunkFilename.c_str(), "wb");
-            fseek(chunkFile, 44, SEEK_SET);
-            fwrite(chunkBuffer, 1, totalBytesCaptured, chunkFile);
-            fseek(chunkFile, 0, SEEK_SET);
-            write_wav_header(chunkFile, pwfx->nSamplesPerSec, pwfx->wBitsPerSample, pwfx->nChannels, bufferBytesCaptured);
-            fclose(chunkFile);
-            bufferBytesCaptured = 0;
+            if (whisper_full(wctx, wparams, audioBuffer.data(), audioBuffer.size()) != 0)
+            {
+                std::cerr << "Whisper failed to process audio chunk\n";
+            }
+            else
+            {
+                // The callback has already printed the streaming results.
+                // We print a newline here to signify the end of a processing chunk.
+                std::cout << std::endl;
+            }
+            audioBuffer.clear();
         }
     }
     return 0;
 }
 
+// --- Audio Capture Thread (Producer) ---
+DWORD WINAPI CaptureAudioThread(LPVOID)
+{
+    // A thread that uses COM must initialize it
+    CoInitializeEx(NULL, COINIT_MULTITHREADED);
+
+    HRESULT hr;
+    while (capturing)
+    {
+        UINT32 packetLength = 0;
+        hr = captureClient->GetNextPacketSize(&packetLength);
+        if (FAILED(hr) || packetLength == 0)
+        {
+            Sleep(1); // Wait a bit if no packet is available
+            continue;
+        }
+
+        BYTE *pData;
+        UINT32 numFramesAvailable;
+        DWORD flags;
+        hr = captureClient->GetBuffer(&pData, &numFramesAvailable, &flags, NULL, NULL);
+        if (FAILED(hr))
+        {
+            continue;
+        }
+
+        if (numFramesAvailable > 0)
+        {
+            // 1. Create a media buffer for the captured data
+            IMFMediaBuffer *pBuffer = NULL;
+            hr = MFCreateMemoryBuffer(numFramesAvailable * pwfx->nBlockAlign, &pBuffer);
+
+            BYTE *pMFData = NULL;
+            if (SUCCEEDED(hr))
+            {
+                pBuffer->Lock(&pMFData, NULL, NULL);
+                memcpy(pMFData, pData, numFramesAvailable * pwfx->nBlockAlign);
+                pBuffer->Unlock();
+                pBuffer->SetCurrentLength(numFramesAvailable * pwfx->nBlockAlign);
+            }
+
+            captureClient->ReleaseBuffer(numFramesAvailable);
+
+            IMFSample *pSample = NULL;
+            if (SUCCEEDED(hr))
+                hr = MFCreateSample(&pSample);
+            if (SUCCEEDED(hr))
+                hr = pSample->AddBuffer(pBuffer);
+
+            // 2. Process the input sample through the resampler
+            if (SUCCEEDED(hr))
+                hr = pResampler->ProcessInput(0, pSample, 0);
+
+            pBuffer->Release();
+            pSample->Release();
+
+            // 3. Get the resampled output data from the transform
+            if (SUCCEEDED(hr))
+            {
+                while (true)
+                {
+                    MFT_OUTPUT_DATA_BUFFER outputDataBuffer = {0};
+                    IMFSample *pOutSample = NULL;
+                    MFCreateSample(&pOutSample);
+                    IMFMediaBuffer *pOutBuffer = NULL;
+                    MFCreateMemoryBuffer(4096, &pOutBuffer); // Create a buffer for output
+                    // MFCreateMemoryBuffer(2048, &pOutBuffer); // Create a buffer for output
+                    pOutSample->AddBuffer(pOutBuffer);
+                    outputDataBuffer.pSample = pOutSample;
+
+                    DWORD dwStatus;
+                    hr = pResampler->ProcessOutput(0, 1, &outputDataBuffer, &dwStatus);
+
+                    if (hr == MF_E_TRANSFORM_NEED_MORE_INPUT)
+                    {
+                        pOutSample->Release();
+                        pOutBuffer->Release();
+                        break; // Need more data, exit inner loop
+                    }
+
+                    // 4. Convert resampled data and push to queue
+                    IMFMediaBuffer *pContiguousBuffer = NULL;
+                    outputDataBuffer.pSample->ConvertToContiguousBuffer(&pContiguousBuffer);
+
+                    BYTE *pResampledData = NULL;
+                    DWORD cbBytes = 0;
+                    pContiguousBuffer->Lock(&pResampledData, NULL, &cbBytes);
+
+                    if (cbBytes > 0)
+                    {
+                        size_t numSamples = cbBytes / (TARGET_BITS_PER_SAMPLE / 8);
+                        std::vector<float> pcmf32(numSamples);
+                        int16_t *pcm16 = reinterpret_cast<int16_t *>(pResampledData);
+
+                        for (size_t i = 0; i < numSamples; i++)
+                        {
+                            pcmf32[i] = static_cast<float>(pcm16[i]) / 32768.0f;
+                        }
+
+                        // Push to thread-safe queue
+                        {
+                            std::lock_guard<std::mutex> lock(audioQueue.m);
+                            audioQueue.q.push(std::move(pcmf32));
+                        }
+                        audioQueue.cv.notify_one();
+                    }
+
+                    pContiguousBuffer->Unlock();
+                    pContiguousBuffer->Release();
+                    pOutSample->Release();
+                    pOutBuffer->Release();
+                }
+            }
+        }
+    }
+
+    // Uninitialize COM for this thread
+    CoUninitialize();
+    return 0;
+}
+
+// --- StartCapture ---
 Napi::Value StartCapture(const Napi::CallbackInfo &info)
 {
     Napi::Env env = info.Env();
+    std::string modelFile = info[0].As<Napi::String>().Utf8Value();
+    if (!wctx)
+    {
+        wctx = whisper_init_from_file_with_params(modelFile.c_str(), cparams);
+        // wctx = whisper_init_from_file_with_params("ggml-small.en.bin", cparams);
+        if (!wctx)
+        {
+            return Napi::String::New(env, "Failed to initialize whisper context from file");
+        }
+        // --- [MODIFIED] Set the callback on the whisper parameters ---
+        wparams.new_segment_callback = NewSegmentCallback;
+        wparams.print_progress = false;
+        wparams.print_realtime = false;
+        wparams.print_timestamps = false;
+        wparams.single_segment = false; 
+        wparams.max_tokens = 32;      
+        wparams.audio_ctx = 512;
+    }
 
     CoInitialize(NULL);
-    CoCreateInstance(__uuidof(MMDeviceEnumerator), nullptr, CLSCTX_ALL, __uuidof(IMMDeviceEnumerator), (void **)&deviceEnumerator);
-    deviceEnumerator->GetDefaultAudioEndpoint(eRender, eConsole, &defaultDevice);
-    defaultDevice->Activate(__uuidof(IAudioClient), CLSCTX_ALL, NULL, (void **)&audioClient);
-    audioClient->GetMixFormat(&pwfx);
-    audioClient->Initialize(AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMFLAGS_LOOPBACK, 10000000, 0, pwfx, NULL);
-    audioClient->Start();
-    audioClient->GetService(__uuidof(IAudioCaptureClient), (void **)&captureClient);
-    std::cout << "Sample Rate: " << pwfx->nSamplesPerSec << "\n";
-    std::cout << "Bits per Sample: " << pwfx->wBitsPerSample << "\n";
-    std::cout << "Channels: " << pwfx->nChannels << "\n";
+    MFStartup(MF_VERSION, MFSTARTUP_FULL);
 
-    wavFile = fopen("output.wav", "wb");
-    fseek(wavFile, 44, SEEK_SET);
+    HRESULT hr;
+    hr = CoCreateInstance(__uuidof(MMDeviceEnumerator), nullptr, CLSCTX_ALL, __uuidof(IMMDeviceEnumerator), (void **)&deviceEnumerator);
+    if (FAILED(hr))
+        return Napi::String::New(env, "Failed to create device enumerator");
+
+    hr = deviceEnumerator->GetDefaultAudioEndpoint(eRender, eConsole, &defaultDevice);
+    if (FAILED(hr))
+        return Napi::String::New(env, "Failed to get default audio endpoint");
+
+    hr = defaultDevice->Activate(__uuidof(IAudioClient), CLSCTX_ALL, NULL, (void **)&audioClient);
+    if (FAILED(hr))
+        return Napi::String::New(env, "Failed to activate audio client");
+
+    hr = audioClient->GetMixFormat(&pwfx);
+    if (FAILED(hr))
+        return Napi::String::New(env, "Failed to get mix format");
+
+    if (pwfx->wFormatTag != WAVE_FORMAT_EXTENSIBLE ||
+        ((WAVEFORMATEXTENSIBLE *)pwfx)->SubFormat != KSDATAFORMAT_SUBTYPE_IEEE_FLOAT)
+    {
+        CoTaskMemFree(pwfx);
+        return Napi::String::New(env, "Unsupported audio format. Expected 32-bit float.");
+    }
+
+    // --- SETUP WMF RESAMPLER ---
+    hr = CoCreateInstance(CLSID_CResamplerMediaObject, NULL, CLSCTX_INPROC_SERVER, IID_IMFTransform, (void **)&pResampler);
+    if (FAILED(hr))
+        return Napi::String::New(env, "Failed to create resampler");
+
+    // 1. Configure Input Type (from WASAPI)
+    IMFMediaType *pInputType = NULL;
+    MFCreateMediaType(&pInputType);
+    pInputType->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Audio);
+    pInputType->SetGUID(MF_MT_SUBTYPE, MFAudioFormat_Float);
+    pInputType->SetUINT32(MF_MT_AUDIO_NUM_CHANNELS, pwfx->nChannels);
+    pInputType->SetUINT32(MF_MT_AUDIO_SAMPLES_PER_SECOND, pwfx->nSamplesPerSec);
+    pInputType->SetUINT32(MF_MT_AUDIO_BLOCK_ALIGNMENT, pwfx->nBlockAlign);
+    pInputType->SetUINT32(MF_MT_AUDIO_AVG_BYTES_PER_SECOND, pwfx->nAvgBytesPerSec);
+    pInputType->SetUINT32(MF_MT_AUDIO_BITS_PER_SAMPLE, 32); // 32-bit float
+    pResampler->SetInputType(0, pInputType, 0);
+    pInputType->Release();
+
+    // 2. Configure Output Type (our target format)
+    IMFMediaType *pOutputType = NULL;
+    MFCreateMediaType(&pOutputType);
+    pOutputType->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Audio);
+    pOutputType->SetGUID(MF_MT_SUBTYPE, MFAudioFormat_PCM);
+    pOutputType->SetUINT32(MF_MT_AUDIO_NUM_CHANNELS, TARGET_CHANNELS);
+    pOutputType->SetUINT32(MF_MT_AUDIO_SAMPLES_PER_SECOND, TARGET_SAMPLE_RATE);
+    pOutputType->SetUINT32(MF_MT_AUDIO_BITS_PER_SAMPLE, TARGET_BITS_PER_SAMPLE);
+    pOutputType->SetUINT32(MF_MT_AUDIO_BLOCK_ALIGNMENT, TARGET_CHANNELS * (TARGET_BITS_PER_SAMPLE / 8));
+    pOutputType->SetUINT32(MF_MT_AUDIO_AVG_BYTES_PER_SECOND, TARGET_SAMPLE_RATE * TARGET_CHANNELS * (TARGET_BITS_PER_SAMPLE / 8));
+    pResampler->SetOutputType(0, pOutputType, 0);
+    pOutputType->Release();
+
+    hr = audioClient->Initialize(AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMFLAGS_LOOPBACK, 1000000, 0, pwfx, NULL);
+    if (FAILED(hr))
+        return Napi::String::New(env, "Failed to initialize audio client");
+
+    hr = audioClient->GetService(__uuidof(IAudioCaptureClient), (void **)&captureClient);
+    if (FAILED(hr))
+        return Napi::String::New(env, "Failed to get capture client");
+
+    hr = audioClient->Start();
+    if (FAILED(hr))
+        return Napi::String::New(env, "Failed to start audio client");
+
+    std::cout << "Capture started. Source: " << pwfx->nSamplesPerSec << " Hz, "
+              << pwfx->wBitsPerSample << "-bit float. Target: " << TARGET_SAMPLE_RATE << " Hz, "
+              << TARGET_BITS_PER_SAMPLE << "-bit PCM mono.\n";
+
     capturing = true;
+    processing = true;
     captureThread = CreateThread(NULL, 0, CaptureAudioThread, NULL, 0, NULL);
+    whisperThread = CreateThread(NULL, 0, WhisperProcessingThread, NULL, 0, NULL);
 
     return Napi::String::New(env, "Capture started");
 }
 
+// --- StopCapture ---
 Napi::Value StopCapture(const Napi::CallbackInfo &info)
 {
     Napi::Env env = info.Env();
+    if (!capturing)
+    {
+        return Napi::String::New(env, "Capture not running");
+    }
 
     capturing = false;
-    WaitForSingleObject(captureThread, INFINITE);
-    fwrite(dataBuffer, 1, totalBytesCaptured, wavFile);
-    fseek(wavFile, 0, SEEK_SET);
-    write_wav_header(wavFile, pwfx->nSamplesPerSec, pwfx->wBitsPerSample, pwfx->nChannels, totalBytesCaptured);
-    fclose(wavFile);
+    processing = false;
+    audioQueue.cv.notify_all(); // Wake up processing thread so it can exit
 
-    captureClient->Release();
-    audioClient->Stop();
-    audioClient->Release();
-    defaultDevice->Release();
-    deviceEnumerator->Release();
+    if (captureThread)
+    {
+        WaitForSingleObject(captureThread, INFINITE);
+        CloseHandle(captureThread);
+        captureThread = NULL;
+    }
+    if (whisperThread)
+    {
+        WaitForSingleObject(whisperThread, INFINITE);
+        CloseHandle(whisperThread);
+        whisperThread = NULL;
+    }
+
+    // Clear any leftover data from the queue
+    std::queue<std::vector<float>> empty;
+    std::swap(audioQueue.q, empty);
+
+    if (audioClient)
+        audioClient->Stop();
+
+    // Release all COM objects
+    if (captureClient)
+    {
+        captureClient->Release();
+        captureClient = nullptr;
+    }
+    if (audioClient)
+    {
+        audioClient->Release();
+        audioClient = nullptr;
+    }
+    if (defaultDevice)
+    {
+        defaultDevice->Release();
+        defaultDevice = nullptr;
+    }
+    if (deviceEnumerator)
+    {
+        deviceEnumerator->Release();
+        deviceEnumerator = nullptr;
+    }
+    if (pResampler)
+    {
+        pResampler->Release();
+        pResampler = nullptr;
+    }
+    if (pwfx)
+    {
+        CoTaskMemFree(pwfx);
+        pwfx = nullptr;
+    }
+
+    MFShutdown();
     CoUninitialize();
 
-    delete[] dataBuffer;
-    delete[] chunkBuffer;
+    std::cout << "Capture stopped.\n";
     return Napi::String::New(env, "Capture stopped");
 }
 
+// --- N-API Boilerplate ---
 Napi::Object Init(Napi::Env env, Napi::Object exports)
 {
     exports.Set("startCapture", Napi::Function::New(env, StartCapture));
     exports.Set("stopCapture", Napi::Function::New(env, StopCapture));
+    exports.Set("callback", Napi::Function::New(env, RedgCallBack));
     return exports;
 }
 

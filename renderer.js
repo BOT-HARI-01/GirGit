@@ -40,7 +40,11 @@ window.api.message((_event, message) => {
 
 window.api.voice((_event,message) =>{
   const container = document.getElementById('display-transcribe');
-  container.innerHTML += message;
+  if (message === "__CLEAR__") {
+    container.innerHTML = "";
+  } else {
+    container.innerHTML += message;
+  }
 })
 
 window.api.llm((_event,message) =>{

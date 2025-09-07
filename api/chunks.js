@@ -29,7 +29,7 @@ if (!fs.existsSync(outputFile)) {
     fs.writeFileSync(outputFile, ''); 
 }
 
-function transcribeChunk(chunkPath, onData, onError, onEnd) {
+function  transcribeChunk(chunkPath, onData, onError, onEnd) {
     const command = `${whisperExe} -m "${modelPath}" -f "${chunkPath}" --output-txt -otxt -of "${chunkPath}"`;
 
     exec(command, (err, stdout, stderr) => {
@@ -54,25 +54,6 @@ function transcribeChunk(chunkPath, onData, onError, onEnd) {
 }
 
 
-// function watchChunks({ onData, onError, onEnd }) {
-//   console.log("Watching for new audio chunks...");
-//   const processed = new Set();
-
-//   fs.watch(chunksDir, (event, filename) => {
-//     if (event !== "rename" || !filename.endsWith(".wav")) return;
-
-//     const chunkPath = path.join(chunksDir, filename);
-//     if (processed.has(filename)) return;
-
-//     // Delay to allow file to fully write
-//     setTimeout(() => {
-//       if (fs.existsSync(chunkPath)) {
-//         processed.add(filename);
-//         transcribeChunk(chunkPath, onData, onError, onEnd);
-//       }
-//     }, 500);
-//   });
-// }
 
 export function watchChunks({ onData, onError, onEnd }) {
   console.log("Watching for new audio chunks...");
@@ -119,4 +100,26 @@ export function watchChunks({ onData, onError, onEnd }) {
 
   return waitForIdle;
 }
+
+
+
+// function watchChunks({ onData, onError, onEnd }) {
+//   console.log("Watching for new audio chunks...");
+//   const processed = new Set();
+
+//   fs.watch(chunksDir, (event, filename) => {
+//     if (event !== "rename" || !filename.endsWith(".wav")) return;
+
+//     const chunkPath = path.join(chunksDir, filename);
+//     if (processed.has(filename)) return;
+
+//     // Delay to allow file to fully write
+//     setTimeout(() => {
+//       if (fs.existsSync(chunkPath)) {
+//         processed.add(filename);
+//         transcribeChunk(chunkPath, onData, onError, onEnd);
+//       }
+//     }, 500);
+//   });
+// }
 

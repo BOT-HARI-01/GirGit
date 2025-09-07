@@ -1,10 +1,19 @@
 import { app, BrowserWindow, Tray, Menu, ipcMain, screen } from "electron";
 import path from "path";
 //The node cpp code for blocking screen from screen share and a voice recorder of others
-import { createRequire } from 'module';
+import { createRequire } from "module";
 const require = createRequire(import.meta.url);
-const blocker = require('../native/build/Release/blocker');
-const recorder = require('../native/build/Release/listener');
+import { fileURLToPath } from "url";
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const isDev = !app.isPackaged;
+const nativeDir = isDev
+  ? path.join(__dirname, "../native/build/Release")
+  : path.join(process.resourcesPath, "native/build/Release");
+// const blocker = require('../native/build/Release/blocker');
+// const recorder = require('../native/build/Release/listener');
+const blocker = require(path.join(nativeDir, "blocker.node"));
+const recorder = require(path.join(nativeDir, "listener.node"));
 //The global screenshorts file
 import { registerShortCuts, unregisterShortcuts } from "./shortcut.js";
 //The ps1 script to capture screen in windows
@@ -13,22 +22,15 @@ const helper = new WindowsScreenShotHelper();
 //Teseract ocr for extracting text from captured screenshorts
 import { extractTextFromImage } from "./ocrHelper.js";
 import { getActiveModel } from "./modelManager.js";
-//looks for the chunks of wav, when new found exec whisper n transcribes n stores
-import { watchChunks } from "../api/chunks.js";
 import { askLLM } from "./llmCaller.js";
-import { fileURLToPath } from 'url';
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
 
 // creating env file has api keys and the options to select modal
 // ** create it even before the launch of the application to avoid errors when other imports & functions accessing the data in env file
 import { createEnvFile } from "./envCreator.js";
-import { getActiveModel } from "./modelManager.js";
-import { isWebAssemblyCompiledModule } from "util/support/types.js";
 createEnvFile();
 
 //dotenv loader
-const isDev = !app.isPackaged;
+// const isDev = !app.isPackaged;
 const envPath = isDev
   ? path.join(__dirname, "../.env")
   : path.join(app.getPath("userData"), ".env");
@@ -56,43 +58,75 @@ function separateTextAndCode(output) {
   };
 }
 
-
 //Takes the screenshot using ps1 script for windows
 function onScreenShotTriggered(mode) {
   helper
     .takeScreenShot(mode)
     .then(async (path) => {
-      mainWindow.webContents.send(
-        "message-col",
-        "Screenshot taken saved to " + path
-      );
-      win.webContents.send("show-screenshots", [path]);
+      mainWindow.webContents.send("message-col", "ScreenShot Captured");
+      // win.webContents.send("show-screenshots", [path]);
       const text = await extractTextFromImage(path);
-      mainWindow.webContents.send("message-col", "extracted text");
+      mainWindow.webContents.send("message-col", "Extracted Text");
     })
     .catch((err) => {
       console.error("Failed to take screenshot:", err);
     });
 }
-let waitForTranscriptionsDone;
+
+const outputFile = isDev
+  ? path.join(__dirname, "../transcription.txt")
+  : path.join(app.getPath("userData"), "transcription.txt");
+if (!fs.existsSync(outputFile)) {
+  fs.writeFileSync(outputFile, "");
+}
+const modelDir = app.isPackaged
+  ? path.join(process.resourcesPath, "native", "models",)
+  : path.join(__dirname, "../native/models");
+// const modelDir = path.dirname(modelPath);
+if (!fs.existsSync(modelDir)) {
+  fs.mkdirSync(modelDir, { recursive: true });
+  console.log("Created models directory:", modelDir);
+} else {
+  console.log("Models directory already exists:", modelDir);
+}
+const availableModels = fs
+  .readdirSync(modelDir)
+  .filter(file => file.endsWith(".bin"));
+let modelPath;
+if (availableModels.length > 0) {
+    modelPath = path.join(modelDir, availableModels[0]);
+  console.log("Found model:", modelPath);
+} else {
+  console.error("No model file (.bin) found in:", modelDir);
+}
 //The Transcription function for new wav chunks generated
 function startRecord() {
-  const res = recorder.startCapture();
+  const res = recorder.startCapture(modelPath);
+  fs.writeFileSync(outputFile, "");
+  mainWindow.webContents.send("message-col", "Started Recording");
   console.log(res); //logs capture start
-  waitForTranscriptionsDone = watchChunks({
-    //logs each and every Transcribed chunk 'text, errors, filename'
-    onData: (text) => console.log("[TRANSCRIBED]", text),
-    onError: (err) => console.error("[ERROR]", err),
-    onEnd: (chunkName) => console.log("[DONE]", chunkName),
+  win.webContents.send("voiceMode", res);
+  recorder.callback((segment) => {
+    console.log("Transcribed:", segment);
+    win.webContents.send("voiceMode", segment);
+    fs.appendFileSync(outputFile, segment + " ");
   });
+  // waitForTranscriptionsDone = watchChunks({
+  //   //logs each and every Transcribed chunk 'text, errors, filename'
+  //   onData: (text) => console.log("[TRANSCRIBED]", text),
+  //   onError: (err) => console.error("[ERROR]", err),
+  //   onEnd: (chunkName) => console.log("[DONE]", chunkName),
+  // });
 }
 async function stopRecord() {
   const res = recorder.stopCapture();
+  mainWindow.webContents.send("message-col", "Stopped Recording");
+  mainWindow.webContents.send("message-col", "Evaluating Question");
   console.log(res); //logs capture end
-    if (waitForTranscriptionsDone) {
-    console.log("Waiting for all chunks to be transcribed...");
-    await waitForTranscriptionsDone();
-  }
+  //   if (waitForTranscriptionsDone) {
+  //   console.log("Waiting for all chunks to be transcribed...");
+  //   await waitForTranscriptionsDone();
+  // }
 
   const filePath = isDev
     ? path.join(__dirname, "../transcription.txt")
@@ -100,7 +134,10 @@ async function stopRecord() {
 
   const data = fs.readFileSync(filePath, "utf8");
   const result = await askLLM(data);
-  win.webContents.send('voiceMode',result?.output);
+  const rawOutput = result?.output ?? "";
+  const separatedOutput = separateTextAndCode(rawOutput);
+  mainWindow.webContents.send("message-col", "Evaluated");
+  win.webContents.send("get-text", separatedOutput);
 }
 
 //sends text of ocr_output to llm for AI to answer the question
@@ -128,7 +165,7 @@ function scrollControl(direction) {
 }
 let win, mainWindow;
 function CreateWindow() {
-  const { width: screenWidth, height: screenHeight } =  
+  const { width: screenWidth, height: screenHeight } =
     screen.getPrimaryDisplay().workAreaSize;
 
   const mainWindowHeight = 80; // Height of the main window
@@ -152,10 +189,10 @@ function CreateWindow() {
     transparent: true,
     focusable: false,
     webPreferences: {
-      preload: path.join(__dirname, '../preload.js'),
+      preload: path.join(__dirname, "../preload.js"),
       // nodeIntegration: false,
       contextIsolation: true,
-      sandboxL:true,
+      sandboxL: true,
     },
   });
   mainWindow.loadFile(path.join(__dirname, "../ui/load.html"));
@@ -172,10 +209,10 @@ function CreateWindow() {
     transparent: true,
     focusable: false,
     webPreferences: {
-      preload: path.join(__dirname, '../preload.js'),
+      preload: path.join(__dirname, "../preload.js"),
       // nodeIntegration: false,
       contextIsolation: true,
-      sandbox:true,
+      sandbox: true,
     },
   });
 
@@ -263,8 +300,8 @@ function logAllFilesInDir(startPath, output = []) {
 
 app.whenReady().then(() => {
   CreateWindow();
-  const {model} = getActiveModel();
-  mainWindow.webContents.send('llm',model);
+  const { model } = getActiveModel();
+  mainWindow.webContents.send("llm", model);
   log(`\n📦 isPackaged: ${app.isPackaged}`);
   log(`📦 resourcesPath: ${process.resourcesPath}`);
   log(`📦 __dirname (main.js): ${__dirname}`);

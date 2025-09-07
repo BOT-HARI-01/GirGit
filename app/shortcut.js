@@ -7,7 +7,7 @@ const __dirname = path.dirname(__filename);
 import { switchModel } from "./modelManager.js";
 
 let currModeIndex = 0;
-const modes = ["left", "right", "full"];
+const modes = ["Left", "Right", "Full"];
 
 let toggleMouse = false;
 
@@ -70,7 +70,7 @@ globalShortcut.register("Control+Up", () => {
 
   //off or on
   globalShortcut.register("Control+H", () => {
-    win.hide();
+    win.hide(); 
     mainWindow.hide();
   });
   globalShortcut.register("Control+S", () => {
@@ -92,6 +92,9 @@ globalShortcut.register("Control+Up", () => {
   globalShortcut.register("Ctrl+Shift+C", () => {
     const filePath = isDev? path.join(__dirname, "../ocr_output.txt") : path.join(app.getPath("userData"),'ocr_output.txt'); 
     fs.writeFileSync(filePath, "", "utf-8");
+    win.webContents.send("get-text", { text: "", code: "" });
+    win.webContents.send("voiceMode", "__CLEAR__");
+    mainWindow.webContents.send("message-col", "OCR CLEARED");
     console.log("OCR output cleared");
   });
   //Evaulate captured images
