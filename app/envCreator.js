@@ -9,8 +9,7 @@ const __dirname = path.dirname(__filename);
 export function createEnvFile() {
   const filePath = path.join(app.getPath("userData"), ".env");
 
-  const defaultEnvContent = `
-GITHUB_PAT=""
+  const defaultEnvContent = `GITHUB_PAT=""
 GEMINI_KEY=""
 COHERE_KEY=""
 OPENAI_API_KEY=""

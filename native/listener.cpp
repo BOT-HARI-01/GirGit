@@ -12,11 +12,10 @@
 
 #include <whisper.h>
 
-// Include Windows Media Foundation headers for resampling
 #include <mfapi.h>
 #include <mfidl.h>
 #include <mferror.h>
-#include <wmcodecdsp.h> // For CLSID_CResamplerMediaObject
+#include <wmcodecdsp.h> 
 
 #pragma comment(lib, "Ole32.lib")
 #pragma comment(lib, "mfplat.lib")
@@ -24,7 +23,7 @@
 #pragma comment(lib, "mfuuid.lib")
 #pragma comment(lib, "wmcodecdspuuid.lib")
 
-// --- Thread-Safe Queue for Audio Data ---
+
 struct ThreadSafeQueue
 {
     std::queue<std::vector<float>> q;
@@ -32,7 +31,7 @@ struct ThreadSafeQueue
     std::condition_variable cv;
 };
 
-// --- Global Variables ---
+
 IAudioClient *audioClient = nullptr;
 IAudioCaptureClient *captureClient = nullptr;
 IMMDevice *defaultDevice = nullptr;
@@ -48,14 +47,14 @@ bool processing = false;
 
 ThreadSafeQueue audioQueue;
 
-// Target audio format for Whisper
+
 const int TARGET_SAMPLE_RATE = 16000;
 const int TARGET_BITS_PER_SAMPLE = 16;
-const int TARGET_CHANNELS = 1; // Whisper works best with mono
+const int TARGET_CHANNELS = 1; 
 
-// Whisper context and parameters
+
 whisper_context_params cparams = whisper_context_default_params();
-struct whisper_context *wctx = nullptr; // Initialize later
+struct whisper_context *wctx = nullptr; 
 struct whisper_full_params wparams = whisper_full_default_params(WHISPER_SAMPLING_GREEDY);
 
 Napi::ThreadSafeFunction tsfn;
@@ -64,10 +63,10 @@ void InitCallback(const Napi::Env &env, Napi::Function jsCallback)
 {
     tsfn = Napi::ThreadSafeFunction::New(
         env,
-        jsCallback,        // JS callback
-        "WhisperCallback", // Resource name
-        0,                 // Unlimited queue
-        1                  // Only one thread will call
+        jsCallback,        
+        "WhisperCallback", 
+        0,                 
+        1                 
     );
 }
 
@@ -83,18 +82,14 @@ Napi::Value RedgCallBack(const Napi::CallbackInfo &info)
     InitCallback(env, info[0].As<Napi::Function>());
     return env.Null();
 }
-// --- [NEW] Whisper Callback for Real-Time Results ---
-// This function is called by whisper.cpp every time a new segment of text is transcribed.
+
 void NewSegmentCallback(struct whisper_context *ctx, struct whisper_state *state, int n_new, void *user_data)
 {
-    // The main whisper processing loop is in a different thread, so we can get the total segments count.
     const int n_segments = whisper_full_n_segments(ctx);
 
-    // This callback is called with 'n_new' new segments. We'll print the last 'n_new' segments.
     for (int i = n_segments - n_new; i < n_segments; ++i)
     {
         const char *text = whisper_full_get_segment_text(ctx, i);
-        // Print text immediately to the console
         std::string segment(text);
         tsfn.BlockingCall([segment](Napi::Env env, Napi::Function jsCallback)
                           { jsCallback.Call({Napi::String::New(env, segment)}); });
@@ -102,13 +97,10 @@ void NewSegmentCallback(struct whisper_context *ctx, struct whisper_state *state
     }
 }
 
-// --- Whisper Processing Thread (Consumer) ---
 DWORD WINAPI WhisperProcessingThread(LPVOID)
 {
     std::vector<float> audioBuffer;
-    // We can use a larger buffer for better accuracy, as the callback gives us real-time results.
-    // const size_t processing_interval_samples = TARGET_SAMPLE_RATE * 1; // Process in 2-second chunks
-    const size_t processing_interval_samples = TARGET_SAMPLE_RATE / 10; // Process in 2-second chunks
+    const size_t processing_interval_samples = TARGET_SAMPLE_RATE / 10; 
     while (processing)
     {
         {
@@ -137,8 +129,6 @@ DWORD WINAPI WhisperProcessingThread(LPVOID)
             }
             else
             {
-                // The callback has already printed the streaming results.
-                // We print a newline here to signify the end of a processing chunk.
                 std::cout << std::endl;
             }
             audioBuffer.clear();
@@ -147,10 +137,8 @@ DWORD WINAPI WhisperProcessingThread(LPVOID)
     return 0;
 }
 
-// --- Audio Capture Thread (Producer) ---
 DWORD WINAPI CaptureAudioThread(LPVOID)
 {
-    // A thread that uses COM must initialize it
     CoInitializeEx(NULL, COINIT_MULTITHREADED);
 
     HRESULT hr;
@@ -160,7 +148,7 @@ DWORD WINAPI CaptureAudioThread(LPVOID)
         hr = captureClient->GetNextPacketSize(&packetLength);
         if (FAILED(hr) || packetLength == 0)
         {
-            Sleep(1); // Wait a bit if no packet is available
+            Sleep(1); 
             continue;
         }
 
@@ -175,7 +163,6 @@ DWORD WINAPI CaptureAudioThread(LPVOID)
 
         if (numFramesAvailable > 0)
         {
-            // 1. Create a media buffer for the captured data
             IMFMediaBuffer *pBuffer = NULL;
             hr = MFCreateMemoryBuffer(numFramesAvailable * pwfx->nBlockAlign, &pBuffer);
 
@@ -196,14 +183,12 @@ DWORD WINAPI CaptureAudioThread(LPVOID)
             if (SUCCEEDED(hr))
                 hr = pSample->AddBuffer(pBuffer);
 
-            // 2. Process the input sample through the resampler
             if (SUCCEEDED(hr))
                 hr = pResampler->ProcessInput(0, pSample, 0);
 
             pBuffer->Release();
             pSample->Release();
 
-            // 3. Get the resampled output data from the transform
             if (SUCCEEDED(hr))
             {
                 while (true)
@@ -212,8 +197,7 @@ DWORD WINAPI CaptureAudioThread(LPVOID)
                     IMFSample *pOutSample = NULL;
                     MFCreateSample(&pOutSample);
                     IMFMediaBuffer *pOutBuffer = NULL;
-                    MFCreateMemoryBuffer(4096, &pOutBuffer); // Create a buffer for output
-                    // MFCreateMemoryBuffer(2048, &pOutBuffer); // Create a buffer for output
+                    MFCreateMemoryBuffer(4096, &pOutBuffer);
                     pOutSample->AddBuffer(pOutBuffer);
                     outputDataBuffer.pSample = pOutSample;
 
@@ -224,10 +208,9 @@ DWORD WINAPI CaptureAudioThread(LPVOID)
                     {
                         pOutSample->Release();
                         pOutBuffer->Release();
-                        break; // Need more data, exit inner loop
+                        break; 
                     }
 
-                    // 4. Convert resampled data and push to queue
                     IMFMediaBuffer *pContiguousBuffer = NULL;
                     outputDataBuffer.pSample->ConvertToContiguousBuffer(&pContiguousBuffer);
 
@@ -246,7 +229,6 @@ DWORD WINAPI CaptureAudioThread(LPVOID)
                             pcmf32[i] = static_cast<float>(pcm16[i]) / 32768.0f;
                         }
 
-                        // Push to thread-safe queue
                         {
                             std::lock_guard<std::mutex> lock(audioQueue.m);
                             audioQueue.q.push(std::move(pcmf32));
@@ -263,12 +245,10 @@ DWORD WINAPI CaptureAudioThread(LPVOID)
         }
     }
 
-    // Uninitialize COM for this thread
     CoUninitialize();
     return 0;
 }
 
-// --- StartCapture ---
 Napi::Value StartCapture(const Napi::CallbackInfo &info)
 {
     Napi::Env env = info.Env();
@@ -276,12 +256,10 @@ Napi::Value StartCapture(const Napi::CallbackInfo &info)
     if (!wctx)
     {
         wctx = whisper_init_from_file_with_params(modelFile.c_str(), cparams);
-        // wctx = whisper_init_from_file_with_params("ggml-small.en.bin", cparams);
         if (!wctx)
         {
             return Napi::String::New(env, "Failed to initialize whisper context from file");
         }
-        // --- [MODIFIED] Set the callback on the whisper parameters ---
         wparams.new_segment_callback = NewSegmentCallback;
         wparams.print_progress = false;
         wparams.print_realtime = false;
@@ -318,12 +296,10 @@ Napi::Value StartCapture(const Napi::CallbackInfo &info)
         return Napi::String::New(env, "Unsupported audio format. Expected 32-bit float.");
     }
 
-    // --- SETUP WMF RESAMPLER ---
     hr = CoCreateInstance(CLSID_CResamplerMediaObject, NULL, CLSCTX_INPROC_SERVER, IID_IMFTransform, (void **)&pResampler);
     if (FAILED(hr))
         return Napi::String::New(env, "Failed to create resampler");
 
-    // 1. Configure Input Type (from WASAPI)
     IMFMediaType *pInputType = NULL;
     MFCreateMediaType(&pInputType);
     pInputType->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Audio);
@@ -336,7 +312,6 @@ Napi::Value StartCapture(const Napi::CallbackInfo &info)
     pResampler->SetInputType(0, pInputType, 0);
     pInputType->Release();
 
-    // 2. Configure Output Type (our target format)
     IMFMediaType *pOutputType = NULL;
     MFCreateMediaType(&pOutputType);
     pOutputType->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Audio);
@@ -373,7 +348,6 @@ Napi::Value StartCapture(const Napi::CallbackInfo &info)
     return Napi::String::New(env, "Capture started");
 }
 
-// --- StopCapture ---
 Napi::Value StopCapture(const Napi::CallbackInfo &info)
 {
     Napi::Env env = info.Env();
@@ -384,7 +358,7 @@ Napi::Value StopCapture(const Napi::CallbackInfo &info)
 
     capturing = false;
     processing = false;
-    audioQueue.cv.notify_all(); // Wake up processing thread so it can exit
+    audioQueue.cv.notify_all(); 
 
     if (captureThread)
     {
@@ -399,14 +373,12 @@ Napi::Value StopCapture(const Napi::CallbackInfo &info)
         whisperThread = NULL;
     }
 
-    // Clear any leftover data from the queue
     std::queue<std::vector<float>> empty;
     std::swap(audioQueue.q, empty);
 
     if (audioClient)
         audioClient->Stop();
 
-    // Release all COM objects
     if (captureClient)
     {
         captureClient->Release();
@@ -445,7 +417,6 @@ Napi::Value StopCapture(const Napi::CallbackInfo &info)
     return Napi::String::New(env, "Capture stopped");
 }
 
-// --- N-API Boilerplate ---
 Napi::Object Init(Napi::Env env, Napi::Object exports)
 {
     exports.Set("startCapture", Napi::Function::New(env, StartCapture));
