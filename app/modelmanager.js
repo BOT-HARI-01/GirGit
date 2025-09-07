@@ -37,7 +37,5 @@ export function getActiveModel(){
 
 export function switchModel() {
   activeIndex = (activeIndex + 1) % models.length;
-//   console.log(`Switched to model: ${models[activeIndex].name}`);
-//   console.log(models[activeIndex].key);
   return models[activeIndex];
 }

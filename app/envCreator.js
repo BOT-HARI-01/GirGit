@@ -6,9 +6,11 @@ import { fileURLToPath } from "url";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
+const isDev = !app.isPackaged;
+const filePath = isDev
+  ? path.join(__dirname, "../.env")
+  : path.join(app.getPath("userData"), ".env");
 export function createEnvFile() {
-  const filePath = path.join(app.getPath("userData"), ".env");
-
   const defaultEnvContent = `GITHUB_PAT=""
 GEMINI_KEY=""
 COHERE_KEY=""
