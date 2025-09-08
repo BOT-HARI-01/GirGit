@@ -201,7 +201,7 @@ function startRecord() {
   recorder.callback((segment) => {
     console.log("\nTranscribed:", segment);
     liveTranscript += segment + " ";
-    win.webContents.send("voiceMode", segment);
+    // win.webContents.send("voiceMode", segment);
     fs.appendFileSync(outputFile, segment + " ");
   });
 }
@@ -221,11 +221,14 @@ async function evaluteRecording() {
   if (!liveTranscript) {
     mainWindow.webContents.send("message-col", "No Transcript Yet...");
   }
+  console.log(liveTranscript)
   const result = await askLLM(liveTranscript);
   const rawOutput = result?.output ?? "";
   const separatedOutput = separateTextAndCode(rawOutput);
+  liveTranscript = " ";
   mainWindow.webContents.send("message-col", "Evaluated");
   win.webContents.send("get-text", separatedOutput);
+
 }
 
 //sends text of ocr_output to llm for AI to answer the question
@@ -330,9 +333,9 @@ function CreateWindow() {
   tray.setContextMenu(contextMenu);
   tray.setToolTip("GirGit");
 
-  win.setContentProtection(true);
+  // win.setContentProtection(true);
   win.setIgnoreMouseEvents(true);
-  mainWindow.setContentProtection(true);
+  // mainWindow.setContentProtection(true);
   mainWindow.setIgnoreMouseEvents(true);
   win.on("ready-to-show", () => {
     checkDefApiKey();
@@ -357,8 +360,8 @@ function CreateWindow() {
     }
     // console.log(`HWND: ${hwnd}, HWND1: ${hwnd1}`);
 
-    blocker.disableScreenCapture(Number(hwnd));
-    blocker.disableScreenCapture(Number(hwnd1));
+    // blocker.disableScreenCapture(Number(hwnd));
+    // blocker.disableScreenCapture(Number(hwnd1));
     registerShortCuts(
       win,
       mainWindow,

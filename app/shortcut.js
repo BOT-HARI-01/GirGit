@@ -105,7 +105,7 @@ globalShortcut.register("Control+Up", () => {
     win.webContents.send("voiceMode", "__CLEAR__");
     mainWindow.webContents.send("message-col", "OCR CLEARED");
     console.log("OCR output cleared");
-    liveTranscript = "";21
+    liveTranscript = "";
   });
   //Evaulate captured images
   globalShortcut.register("Control+Enter", async () => {
