@@ -1,5 +1,8 @@
 import { app, BrowserWindow, Tray, Menu, ipcMain, screen } from "electron";
+import fs from 'fs';
 import path from "path";
+import pkg from "follow-redirects";
+const { https } = pkg;
 //The node cpp code for blocking screen from screen share and a voice recorder of others
 import { createRequire } from "module";
 const require = createRequire(import.meta.url);
@@ -23,10 +26,11 @@ const helper = new WindowsScreenShotHelper();
 import { extractTextFromImage } from "./ocrHelper.js";
 import { getActiveModel } from "./modelManager.js";
 import { askLLM } from "./llmCaller.js";
-
+import { shell } from "electron";
 // creating env file has api keys and the options to select modal
 // ** create it even before the launch of the application to avoid errors when other imports & functions accessing the data in env file
 import { createEnvFile } from "./envCreator.js";
+import { globalShortcut } from "electron";
 createEnvFile();
 
 //dotenv loader
@@ -36,9 +40,41 @@ const envPath = isDev
   : path.join(app.getPath("userData"), ".env");
 const dotenv = require("dotenv");
 dotenv.config({ path: envPath });
+function checkDefApiKey() {
+  if (!process.env.GEMINI_KEY) {
+    shell.openExternal("https://aistudio.google.com/apikey");
+    mainWindow.webContents.send("apiSetup", "SETUP API KEY");
+    win.webContents.send(
+      "voiceMode",
+      `
+  <div style="
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    height: 100vh;
+    text-align: center;
+  ">
+    <div><b><h1>Woahhhh.... Wassup</h1></b></div>
+    <div><b><h2>Complete the initial setup</h2></b></div>
+    <div><b>1. Create an API KEY from Gemini</b></div> 
+    <div><b>2. Copy the API KEY</b></div>
+    <div><b>3. Ctrl + .   → Open "ENV" file & paste the API key</b></div>
+    <div><b>4. Save the .env file</b></div>
+    <div><b>5. Wait Till the Resource is downloaded initially</b></div>
+    <div><b> Do not close until the Resource download is finished</b></div>
+    <div><b>Restart the appliation and ready to go</b></div>
+  </div>
+`
+    );
 
-//file path logger
-const fs = require("fs");
+    globalShortcut.unregister("ctrl + s");
+  }else{
+    mainWindow.webContents.send("apiSetup", "API KEY FOUND");
+  }
+}
+
+
 const logPath = path.join(app.getPath("userData"), "path_debug.log");
 function log(msg) {
   fs.appendFileSync(logPath, msg + "\n");
@@ -60,11 +96,17 @@ function separateTextAndCode(output) {
 
 //Takes the screenshot using ps1 script for windows
 function onScreenShotTriggered(mode) {
+  mainWindow.webContents.send(
+    "commands",
+    `
+        <div><b>Ctrl + Enter</b> → Evaluate</div>
+        <div><b>Ctrl + Shift + C </b> → Clear screenshot</div>
+    `
+  );
   helper
     .takeScreenShot(mode)
     .then(async (path) => {
       mainWindow.webContents.send("message-col", "ScreenShot Captured");
-      // win.webContents.send("show-screenshots", [path]);
       const text = await extractTextFromImage(path);
       mainWindow.webContents.send("message-col", "Extracted Text");
     })
@@ -73,6 +115,13 @@ function onScreenShotTriggered(mode) {
     });
 }
 
+function safeSend(channel, message) {
+  if (mainWindow && !mainWindow.isDestroyed() && mainWindow.webContents) {
+    mainWindow.webContents.send(channel, message);
+  }
+}
+
+let modelPath;
 const outputFile = isDev
   ? path.join(__dirname, "../transcription.txt")
   : path.join(app.getPath("userData"), "transcription.txt");
@@ -80,9 +129,8 @@ if (!fs.existsSync(outputFile)) {
   fs.writeFileSync(outputFile, "");
 }
 const modelDir = app.isPackaged
-  ? path.join(process.resourcesPath, "native", "models",)
+  ? path.join(process.resourcesPath, "native", "models")
   : path.join(__dirname, "../native/models");
-// const modelDir = path.dirname(modelPath);
 if (!fs.existsSync(modelDir)) {
   fs.mkdirSync(modelDir, { recursive: true });
   console.log("Created models directory:", modelDir);
@@ -91,49 +139,89 @@ if (!fs.existsSync(modelDir)) {
 }
 const availableModels = fs
   .readdirSync(modelDir)
-  .filter(file => file.endsWith(".bin"));
-let modelPath;
-if (availableModels.length > 0) {
+  .filter((file) => file.endsWith(".bin"));
+function getVoiceModel() {
+  if (availableModels.length > 0) {
     modelPath = path.join(modelDir, availableModels[0]);
-  console.log("Found model:", modelPath);
-} else {
-  console.error("No model file (.bin) found in:", modelDir);
+    console.log("Found model:", modelPath);
+  } else {
+    console.error("No model file (.bin) found in:", modelDir);
+    mainWindow.webContents.send("message-col", "Downloading Resource...");
+    const dowloadLink =
+      "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small-q8_0.bin";
+    const downloadFileName = "ggml-small-q8.0.bin";
+    const tempFile = downloadFileName + ".path";
+    const downloadPath = path.join(modelDir, tempFile);
+    const finalFile = path.join(modelDir, downloadFileName);
+
+    const file = fs.createWriteStream(downloadPath);
+    https
+      .get(dowloadLink, (response) => {
+        const totalSize = parseInt(response.headers["content-length"], 10);
+        let downloaded = 0;
+        response.on("data", (chunk) => {
+          downloaded += chunk.length;
+          const percent = ((downloaded / totalSize) * 100).toFixed(2);
+          safeSend("message-col", `Downloading: ${percent}%`);
+        });
+        response.pipe(file);
+        file.on("finish", () => {
+          fs.renameSync(downloadPath, finalFile);
+          file.close();
+          console.log("Model downloaded:", downloadPath);
+          mainWindow.webContents.send("message-col", "Resource Downloaded");
+        });
+      })
+      .on("error", (err) => {
+        fs.unlink(downloadPath, () => {});
+        // console.error("Error downloading model:", err.message);
+        mainWindow.webContents.send(
+          "message-col",
+          "Download Failed! Restart App"
+        );
+      });
+  }
 }
+let liveTranscript = "";
 //The Transcription function for new wav chunks generated
 function startRecord() {
-  const res = recorder.startCapture(modelPath);
+  mainWindow.webContents.send(
+    "commands",
+    `
+        <div>🎙️Recording Started</div>
+        <div><b>Ctrl + E</b> → Evaluate</div>
+        <div><b>Ctrl + W</b> → Stop Recording</div> 
+    `
+  );
+  const res = recorder.startCapture(String(modelPath));
   fs.writeFileSync(outputFile, "");
   mainWindow.webContents.send("message-col", "Started Recording");
-  console.log(res); //logs capture start
-  win.webContents.send("voiceMode", res);
+  // console.log(res); //logs capture start
+  // win.webContents.send("voiceMode", res);
   recorder.callback((segment) => {
-    console.log("Transcribed:", segment);
+    console.log("\nTranscribed:", segment);
+    liveTranscript += segment + " ";
     win.webContents.send("voiceMode", segment);
     fs.appendFileSync(outputFile, segment + " ");
   });
-  // waitForTranscriptionsDone = watchChunks({
-  //   //logs each and every Transcribed chunk 'text, errors, filename'
-  //   onData: (text) => console.log("[TRANSCRIBED]", text),
-  //   onError: (err) => console.error("[ERROR]", err),
-  //   onEnd: (chunkName) => console.log("[DONE]", chunkName),
-  // });
 }
 async function stopRecord() {
   const res = recorder.stopCapture();
   mainWindow.webContents.send("message-col", "Stopped Recording");
+}
+async function evaluteRecording() {
+  win.webContents.send("get-text", { text: "", code: "" });
   mainWindow.webContents.send("message-col", "Evaluating Question");
-  console.log(res); //logs capture end
-  //   if (waitForTranscriptionsDone) {
-  //   console.log("Waiting for all chunks to be transcribed...");
-  //   await waitForTranscriptionsDone();
-  // }
+  // const filePath = isDev
+  //   ? path.join(__dirname, "../transcription.txt")
+  //   : path.join(app.getPath("userData"), "transcription.txt");
 
-  const filePath = isDev
-    ? path.join(__dirname, "../transcription.txt")
-    : path.join(app.getPath("userData"), "transcription.txt");
-
-  const data = fs.readFileSync(filePath, "utf8");
-  const result = await askLLM(data);
+  // const data = fs.readFileSync(filePath, "utf8");
+  liveTranscript = liveTranscript.trim();
+  if (!liveTranscript) {
+    mainWindow.webContents.send("message-col", "No Transcript Yet...");
+  }
+  const result = await askLLM(liveTranscript);
   const rawOutput = result?.output ?? "";
   const separatedOutput = separateTextAndCode(rawOutput);
   mainWindow.webContents.send("message-col", "Evaluated");
@@ -147,6 +235,7 @@ async function onEvaluate() {
     : path.join(app.getPath("userData"), "ocr_output.txt");
 
   const data = fs.readFileSync(filePath, "utf8");
+
   mainWindow.webContents.send("message-col", "Evaluating...");
   const result = await askLLM(data);
   const rawOutput = result?.output ?? "";
@@ -169,7 +258,7 @@ function CreateWindow() {
     screen.getPrimaryDisplay().workAreaSize;
 
   const mainWindowHeight = 80; // Height of the main window
-  const mainWindowWidth = 1000; // Width of the main window
+  const mainWindowWidth = 1280; // Width of the main window
 
   const winHeight = 800; // Height of the main window
   const winWidth = 1280; // Width of the main window
@@ -246,6 +335,16 @@ function CreateWindow() {
   mainWindow.setContentProtection(true);
   mainWindow.setIgnoreMouseEvents(true);
   win.on("ready-to-show", () => {
+    checkDefApiKey();
+    getVoiceModel();
+
+    mainWindow.webContents.send(
+      "commands",
+      `
+        <div><b>Ctrl + Shift + S </b> → ScreenShot</div>
+        <div><b>Ctrl + R </b> → Start Recording</div> 
+    `
+    );
     const hwndBuffer = win.getNativeWindowHandle();
     const hwnd1Buffer = mainWindow.getNativeWindowHandle();
     let hwnd, hwnd1;
@@ -269,7 +368,9 @@ function CreateWindow() {
       scrollControl,
       startRecord,
       stopRecord,
-      haltMouseEvent
+      haltMouseEvent,
+      evaluteRecording,
+      liveTranscript
     );
   });
 }

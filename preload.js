@@ -5,6 +5,8 @@ contextBridge.exposeInMainWorld('api', {
     captureMode: (callback) => ipcRenderer.on('captureMode',callback),
     scroller: (callback) => ipcRenderer.on('do-scroll',callback),
     message: (callback) => ipcRenderer.on('message-col',callback),
+    commands: (callback) => ipcRenderer.on('commands',callback),
+    apiSetup: (callback) => ipcRenderer.on('apiSetup',callback),
     voice: (callback) =>ipcRenderer.on('voiceMode',callback),
     llm:(callback) =>  ipcRenderer.on('llm',callback)
 });

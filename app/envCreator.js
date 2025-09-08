@@ -11,10 +11,15 @@ const filePath = isDev
   ? path.join(__dirname, "../.env")
   : path.join(app.getPath("userData"), ".env");
 export function createEnvFile() {
-  const defaultEnvContent = `GITHUB_PAT=""
+  const defaultEnvContent = `## CTRL + S → Does not work in for save when the app is running, "Save Manually"
+GITHUB_PAT=""
 GEMINI_KEY=""
 COHERE_KEY=""
 OPENAI_API_KEY=""
+
+
+#Select the coding Language Preferable Options [CPP, JAVA, PYTHON, etc...]
+LANGUAGE = "JAVA"
 `;
 
   if (!fs.existsSync(filePath)) {

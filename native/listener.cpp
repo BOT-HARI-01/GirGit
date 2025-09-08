@@ -9,13 +9,17 @@
 #include <queue>
 #include <mutex>
 #include <condition_variable>
-
+#include <deque>
 #include <whisper.h>
-
+#include <minwindef.h>
+#include<algorithm>
 #include <mfapi.h>
 #include <mfidl.h>
 #include <mferror.h>
-#include <wmcodecdsp.h> 
+#include <wmcodecdsp.h>
+#ifdef min
+#undef min
+#endif
 
 #pragma comment(lib, "Ole32.lib")
 #pragma comment(lib, "mfplat.lib")
@@ -23,14 +27,12 @@
 #pragma comment(lib, "mfuuid.lib")
 #pragma comment(lib, "wmcodecdspuuid.lib")
 
-
 struct ThreadSafeQueue
 {
     std::queue<std::vector<float>> q;
     std::mutex m;
     std::condition_variable cv;
 };
-
 
 IAudioClient *audioClient = nullptr;
 IAudioCaptureClient *captureClient = nullptr;
@@ -47,14 +49,22 @@ bool processing = false;
 
 ThreadSafeQueue audioQueue;
 
-
 const int TARGET_SAMPLE_RATE = 16000;
 const int TARGET_BITS_PER_SAMPLE = 16;
-const int TARGET_CHANNELS = 1; 
+const int TARGET_CHANNELS = 1;
 
+const int WINDOW_MS = 1000; // 1SEC
+const int STEP_MS = 50;    // 0.25 SEC
+
+const size_t WINDOW_SAMPLE = TARGET_SAMPLE_RATE * WINDOW_MS / 1000; // 1 sec window
+const size_t STEP_SAMPLE = TARGET_SAMPLE_RATE * STEP_MS / 1000;     // 0.25 sec processing sample
+
+std::deque<float> rollingBuffer;
+size_t prevNofSamples = 0;
+std::mutex bufferMutex;
 
 whisper_context_params cparams = whisper_context_default_params();
-struct whisper_context *wctx = nullptr; 
+struct whisper_context *wctx = nullptr;
 struct whisper_full_params wparams = whisper_full_default_params(WHISPER_SAMPLING_GREEDY);
 
 Napi::ThreadSafeFunction tsfn;
@@ -63,11 +73,10 @@ void InitCallback(const Napi::Env &env, Napi::Function jsCallback)
 {
     tsfn = Napi::ThreadSafeFunction::New(
         env,
-        jsCallback,        
-        "WhisperCallback", 
-        0,                 
-        1                 
-    );
+        jsCallback,
+        "WhisperCallback",
+        0,
+        1);
 }
 
 Napi::Value RedgCallBack(const Napi::CallbackInfo &info)
@@ -97,46 +106,116 @@ void NewSegmentCallback(struct whisper_context *ctx, struct whisper_state *state
     }
 }
 
+// DWORD WINAPI WhisperProcessingThread(LPVOID)
+// {
+//     std::vector<float> audioChunkBuffer;
+//     // const size_t processing_interval_samples = TARGET_SAMPLE_RATE / 10;
+//     while (processing)
+//     {
+//         {
+//             std::unique_lock<std::mutex> lock(audioQueue.m);
+//             audioQueue.cv.wait(lock, [&]
+//                                { return !audioQueue.q.empty() || !processing; });
+
+//             if (!processing && audioQueue.q.empty())
+//             {
+//                 break;
+//             }
+
+//             while (!audioQueue.q.empty())
+//             {
+//                 audioChunkBuffer = std::move(audioQueue.q.front());
+//                 audioQueue.q.pop();
+
+//                 std::lock_guard<std::mutex> bufferLock(bufferMutex);
+//                 rollingBuffer.insert(rollingBuffer.end(), audioChunkBuffer.begin(), audioChunkBuffer.end());
+//                 prevNofSamples += audioChunkBuffer.size();
+//             }
+//         }
+
+//         {
+//             std::lock_guard<std::mutex> bufferLock(bufferMutex);
+//             if (rollingBuffer.size() >= WINDOW_SAMPLE &&
+//                 prevNofSamples >= STEP_SAMPLE)
+//             {
+
+//                 std::vector<float> window(
+//                     rollingBuffer.end() - WINDOW_SAMPLE,
+//                     rollingBuffer.end());
+
+//                 prevNofSamples = 0;
+//                 if (whisper_full(wctx, wparams, window.data(), window.size()) != 0)
+//                 {
+//                     std::cerr << "Whisper failed\n";
+//                 }
+//             }
+//             while (rollingBuffer.size() > WINDOW_SAMPLE * 2)
+//             {
+//                 rollingBuffer.pop_front();
+//             }
+//         }
+//         Sleep(2);
+//     }
+//     return 0;
+// }
+
+
 DWORD WINAPI WhisperProcessingThread(LPVOID)
 {
-    std::vector<float> audioBuffer;
-    const size_t processing_interval_samples = TARGET_SAMPLE_RATE / 10; 
+    std::vector<float> pcmf32_chunk;
+
+    const int CHUNK_MS = 200;
+    const size_t CHUNK_SAMPLES = (TARGET_SAMPLE_RATE * CHUNK_MS) / 1000;
+
     while (processing)
     {
         {
+            std::vector<float> new_audio;
             std::unique_lock<std::mutex> lock(audioQueue.m);
-            audioQueue.cv.wait(lock, [&]
-                               { return !audioQueue.q.empty() || !processing; });
-
-            if (!processing && audioQueue.q.empty())
+            if (audioQueue.cv.wait_for(lock, std::chrono::milliseconds(100), [&] { return !audioQueue.q.empty() || !processing; }))
             {
-                break;
-            }
-
-            while (!audioQueue.q.empty())
-            {
-                std::vector<float> chunk = std::move(audioQueue.q.front());
-                audioQueue.q.pop();
-                audioBuffer.insert(audioBuffer.end(), chunk.begin(), chunk.end());
-            }
-        }
-
-        if (!audioBuffer.empty() && audioBuffer.size() > processing_interval_samples)
-        {
-            if (whisper_full(wctx, wparams, audioBuffer.data(), audioBuffer.size()) != 0)
-            {
-                std::cerr << "Whisper failed to process audio chunk\n";
+                if (!processing && audioQueue.q.empty())
+                {
+                    break;
+                }
+                while (!audioQueue.q.empty())
+                {
+                    std::vector<float> front = std::move(audioQueue.q.front());
+                    audioQueue.q.pop();
+                    new_audio.insert(new_audio.end(), front.begin(), front.end());
+                }
             }
             else
             {
-                std::cout << std::endl;
+                continue;
             }
-            audioBuffer.clear();
+            
+            if (!new_audio.empty())
+            {
+                pcmf32_chunk.insert(pcmf32_chunk.end(), new_audio.begin(), new_audio.end());
+            }
+        }
+
+        if (pcmf32_chunk.size() >= CHUNK_SAMPLES)
+        {
+            if (whisper_full(wctx, wparams, pcmf32_chunk.data(), pcmf32_chunk.size()) != 0)
+            {
+                std::cerr << "Whisper failed on chunk processing\n";
+            }
+            pcmf32_chunk.clear();
         }
     }
+
+    if (!pcmf32_chunk.empty())
+    {
+        if (whisper_full(wctx, wparams, pcmf32_chunk.data(), pcmf32_chunk.size()) != 0)
+        {
+            std::cerr << "Whisper failed on final chunk processing\n";
+        }
+    }
+
     return 0;
 }
-
 DWORD WINAPI CaptureAudioThread(LPVOID)
 {
     CoInitializeEx(NULL, COINIT_MULTITHREADED);
@@ -148,7 +227,7 @@ DWORD WINAPI CaptureAudioThread(LPVOID)
         hr = captureClient->GetNextPacketSize(&packetLength);
         if (FAILED(hr) || packetLength == 0)
         {
-            Sleep(1); 
+            Sleep(1);
             continue;
         }
 
@@ -208,7 +287,7 @@ DWORD WINAPI CaptureAudioThread(LPVOID)
                     {
                         pOutSample->Release();
                         pOutBuffer->Release();
-                        break; 
+                        break;
                     }
 
                     IMFMediaBuffer *pContiguousBuffer = NULL;
@@ -264,9 +343,11 @@ Napi::Value StartCapture(const Napi::CallbackInfo &info)
         wparams.print_progress = false;
         wparams.print_realtime = false;
         wparams.print_timestamps = false;
-        wparams.single_segment = false; 
-        wparams.max_tokens = 32;      
+        wparams.single_segment = false;
+        wparams.max_tokens = 32;
         wparams.audio_ctx = 512;
+        // In StartCapture(), after initializing wparams
+        wparams.n_threads = std::min(4, (int32_t)std::thread::hardware_concurrency());
     }
 
     CoInitialize(NULL);
@@ -324,7 +405,7 @@ Napi::Value StartCapture(const Napi::CallbackInfo &info)
     pResampler->SetOutputType(0, pOutputType, 0);
     pOutputType->Release();
 
-    hr = audioClient->Initialize(AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMFLAGS_LOOPBACK, 1000000, 0, pwfx, NULL);
+    hr = audioClient->Initialize(AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMFLAGS_LOOPBACK, 500000, 0, pwfx, NULL);
     if (FAILED(hr))
         return Napi::String::New(env, "Failed to initialize audio client");
 
@@ -358,7 +439,7 @@ Napi::Value StopCapture(const Napi::CallbackInfo &info)
 
     capturing = false;
     processing = false;
-    audioQueue.cv.notify_all(); 
+    audioQueue.cv.notify_all();
 
     if (captureThread)
     {

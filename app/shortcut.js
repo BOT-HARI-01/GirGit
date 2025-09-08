@@ -29,6 +29,8 @@ export function registerShortCuts(
   startRecord,
   stopRecord,
   haltMouseEvent,
+  evaluteRecording,
+  liveTranscript,
 ) {
   const step = 50;
   //movement
@@ -87,6 +89,13 @@ globalShortcut.register("Control+Up", () => {
     const mode = getCurrentMode();
     onScreenShotTriggered(mode);
   });
+  //open model folder
+  globalShortcut.register("Control+Shift+O", async () =>{
+    const modelDir = app.isPackaged
+      ? path.join(process.resourcesPath, "native", "models",)
+      : path.join(__dirname, "../native/models");
+      shell.openPath(modelDir);
+  })
   //clear ocrdata
   const isDev = !app.isPackaged;
   globalShortcut.register("Ctrl+Shift+C", () => {
@@ -96,6 +105,7 @@ globalShortcut.register("Control+Up", () => {
     win.webContents.send("voiceMode", "__CLEAR__");
     mainWindow.webContents.send("message-col", "OCR CLEARED");
     console.log("OCR output cleared");
+    liveTranscript = "";21
   });
   //Evaulate captured images
   globalShortcut.register("Control+Enter", async () => {
@@ -113,6 +123,9 @@ globalShortcut.register("Control+Up", () => {
     startRecord();
   });
   globalShortcut.register("Control+E", () => {
+    evaluteRecording();
+  });
+  globalShortcut.register("Control+W", () => {
     stopRecord();
   });
 

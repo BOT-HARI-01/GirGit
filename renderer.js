@@ -38,6 +38,19 @@ window.api.message((_event, message) => {
   container.innerHTML = message;
 });
 
+window.api.commands((_event, message) => {
+  const  container = document.getElementById('commands');
+  container.innerHTML = '';
+  container.innerHTML = message;
+});
+
+window.api.apiSetup((_event, message) => {
+  const  container = document.getElementById('api-setup');
+  container.innerHTML = '';
+  container.innerHTML = message;
+});
+
+
 window.api.voice((_event,message) =>{
   const container = document.getElementById('display-transcribe');
   if (message === "__CLEAR__") {

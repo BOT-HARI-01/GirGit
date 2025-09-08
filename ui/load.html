@@ -21,12 +21,16 @@
       }
 
       #capture-Mode,
+      #capture-key,
       #message-display,
       #display-transcribe,
+      #commands,
+      #api-setup,
+      #api-sc,
       #llm {
         color: white;
         font-size: 16px;
-        letter-spacing: 0.8px; 
+        letter-spacing: 0.8px;
         line-height: 1.2;
         font-weight: 500;
         padding: 6px 10px;
@@ -43,6 +47,7 @@
         height: 100%;
       }
       .left,
+      .middle,
       .right {
         flex: 1;
         padding: 10px;
@@ -52,19 +57,40 @@
         background-color: gray;
         height: 100%;
       }
+      .capture-row,
+      .api-row {
+        display: flex;
+        flex-direction: row;
+        align-items: center;
+        gap: 8px;
+      }
     </style>
   </head>
   <body>
     <div class="container">
       <div class="left">
-        <div id="capture-Mode">CaptureMode Left</div>
+        <div class="capture-row">
+          <div id="capture-Mode">CaptureMode Left</div>
+          <div id="capture-key">Ctrl + M</div>
+        </div>
         <div id="message-display"></div>
       </div>
 
       <div class="separator"></div>
 
+      <div class="middle">
+        <div id="commands"></div>
+      </div>
+
+      <div class="separator"></div>
+
       <div class="right">
-        <div id="llm"></div>
+        <div class="api-row">
+          <div id="llm"></div>
+          <div id="api-sc">Ctrl + Shift + M</div>
+        </div>
+
+        <div id="api-setup"></div>
       </div>
     </div>
   </body>
